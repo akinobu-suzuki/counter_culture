@@ -90,12 +90,12 @@ module CounterCulture
           counts_query = scope.select(
             "#{relation_class_table_name}.#{relation_class.primary_key}, " \
             "#{relation_class_table_name}.#{relation_reflect(relation).association_primary_key(relation_class)}, " \
-            "#{count_select} AS count, " \
+            "#{count_select(counter)} AS count, " \
             "MAX(#{relation_class_table_name}.#{column_name}) AS #{column_name}"
           )
 
           # we need to join together tables until we get back to the table this class itself lives in
-          join_clauses(where).each do |join|
+          join_clauses(where, counter.custom_join).each do |join|
             counts_query = counts_query.joins(join)
           end
 
@@ -104,8 +104,8 @@ module CounterCulture
           batch_size = options.fetch(:batch_size, CounterCulture.config.batch_size)
 
           counts_query = counts_query.where(options[:where])
-
-          counts_query.group(full_primary_key(relation_class)).find_in_batches(batch_size: batch_size) do |records|
+          counts_query = counts_query.group(full_primary_key(relation_class))
+          counts_query.find_in_batches(batch_size: batch_size) do |records|
             # now iterate over all the models and see whether their counts are right
             update_count_for_batch(column_name, records)
           end
@@ -171,11 +171,14 @@ module CounterCulture
         }
       end
 
-      def count_select
+      def count_select(counter)
         # if a delta column is provided use SUM, otherwise use COUNT
         return @count_select if @count_select
+
         if delta_column
           @count_select = "SUM(COALESCE(#{self_table_name}.#{delta_column},0))"
+        elsif counter.delta_column_with_table_name
+          @count_select = "SUM(COALESCE(#{counter.delta_column_with_table_name},0))"
         else
           @count_select = "COUNT(#{self_table_name}.#{model.primary_key})*#{delta_magnitude}"
         end
@@ -192,7 +195,7 @@ module CounterCulture
         @self_table_name
       end
 
-      def join_clauses(where)
+      def join_clauses(where, custom_join)
         # we need to work our way back from the end-point of the relation to
         # this class itself; make a list of arrays pointing to the
         # second-to-last, third-to-last, etc.
@@ -262,6 +265,9 @@ module CounterCulture
 
               joins_sql += " AND #{target_table_alias}.#{model.discard_column} IS NULL"
             end
+          end
+          if custom_join
+            joins_sql += " #{custom_join} "
           end
           joins_sql
         end
